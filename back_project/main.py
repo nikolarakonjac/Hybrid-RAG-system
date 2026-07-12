@@ -3,9 +3,11 @@ from typing import Annotated, Any
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from embedding_model import EmbeddingModel
+from logger import log_rag_query, setup_logging
 from pdf_utils import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
@@ -20,6 +22,7 @@ from vector_store import ChromaVectorStore
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    setup_logging()
     app.state.store = ChromaVectorStore()
     app.state.embedder = EmbeddingModel()
     app.state.reranker = CrossEncoderReranker()
@@ -27,6 +30,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Diplomski backend", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:4200", "http://127.0.0.1:4200"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -147,6 +158,8 @@ async def rag_ask(body: RagAskBody) -> dict[str, Any]:
             status_code=502,
             detail=f"Could not reach Ollama ({msg})",
         ) from e
+
+    log_rag_query(body.question, result.context_used, llm_prompt=result.llm_prompt)
 
     return {
         "answer": result.answer,

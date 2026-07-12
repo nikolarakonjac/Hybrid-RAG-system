@@ -27,6 +27,8 @@ class ChromaVectorStore:
     """
 
     COLLECTION_NAME = "rag_chunks"
+    # Chroma enforces a max records-per-add limit (varies by version; ~5461 observed).
+    ADD_BATCH_SIZE = 5000
 
     def __init__(self) -> None:
         self._client = chromadb.EphemeralClient()
@@ -58,12 +60,15 @@ class ChromaVectorStore:
             {"source": source or "", "chunk_index": int(i)}
             for i in range(len(chunk_texts))
         ]
-        self._collection.add(
-            ids=ids,
-            embeddings=emb.tolist(),
-            documents=list(chunk_texts),
-            metadatas=metadatas,
-        )
+        n = len(chunk_texts)
+        for start in range(0, n, self.ADD_BATCH_SIZE):
+            end = min(start + self.ADD_BATCH_SIZE, n)
+            self._collection.add(
+                ids=ids[start:end],
+                embeddings=emb[start:end].tolist(),
+                documents=chunk_texts[start:end],
+                metadatas=metadatas[start:end],
+            )
 
     def search(
         self,

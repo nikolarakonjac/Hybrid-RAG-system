@@ -18,8 +18,8 @@ from reranker import CrossEncoderReranker
 from vector_store import ChromaVectorStore, SearchHit
 
 # Fixed MVP retrieval / context sizes (not exposed on API)
-RETRIEVE_TOP_K = 40
-CONTEXT_TOP_N = 8
+RETRIEVE_TOP_K = 8
+CONTEXT_TOP_N = 4
 
 
 @dataclass(frozen=True)
@@ -55,15 +55,32 @@ def ingest_pdf(
 
 
 def build_rag_user_prompt(question: str, hits: list[SearchHit]) -> str:
+    # parts: list[str] = [
+    #     "You are a precise assistant. Answer the user question strictly using only the provided context below.",
+    #     "If the context does not contain the answer, reply exactly with: 'I cannot find the answer in the provided documents.' Do not use any outside knowledge.",
+    #     "",
+    #     "--- START CONTEXT ---",
+    # ]
+
     parts: list[str] = [
-        "Answer using only the context below. If the context does not contain enough information, say so.",
-        "",
-        "Context:",
+        "Answer the user question using the provided context chunks as additional information source."
+        "Informations from context chunks are truthful and they are extracted from documentation. rely on them as much as possible",
+        "If the context does not provide any answer or clue, reply exactly with: 'I cannot find the answer in the provided documents.' Do not use any outside knowledge.",
+        "Provide concise answer that answers on user's question",
+        "--- START CONTEXT ---",
     ]
+
     for i, h in enumerate(hits, start=1):
-        parts.append(f"[{i}] (chunk_index={h.chunk_index})\n{h.text}")
-        parts.append("")
-    parts.append(f"Question: {question}")
+        # Using XML-style tags to cleanly isolate each document chunk
+        parts.append(f"<document id='{i}'>\n{h.text}\n</document>")
+
+    parts.append("--- END CONTEXT ---")
+    parts.append("")
+    parts.append(f"User Question: {question}")
+    parts.append("Format the answer so if you use parts from context chunks they may be sliced between two chunks."
+                 "answer with full and meaningfull sentences")
+    parts.append("Answer:")
+
     return "\n".join(parts).strip()
 
 
@@ -81,6 +98,7 @@ class RagContextItem:
 class RagQueryResult:
     answer: str
     context_used: list[RagContextItem]
+    llm_prompt: str
 
 
 async def query_rag(
@@ -102,7 +120,7 @@ async def query_rag(
             ],
             model=ollama_model,
         )
-        return RagQueryResult(answer=answer, context_used=[])
+        return RagQueryResult(answer=answer, context_used=[], llm_prompt=question)
 
     q_emb = embedder.encode_one(question)
     hits = store.search(q_emb, top_k=RETRIEVE_TOP_K)
@@ -117,7 +135,7 @@ async def query_rag(
             ],
             model=ollama_model,
         )
-        return RagQueryResult(answer=answer, context_used=[])
+        return RagQueryResult(answer=answer, context_used=[], llm_prompt=question)
 
     passages = [h.text for h in hits]
     ranked = reranker.rerank(question, passages, top_n=CONTEXT_TOP_N)
@@ -146,4 +164,8 @@ async def query_rag(
                 source=h.source,
             )
         )
-    return RagQueryResult(answer=answer, context_used=context_used)
+    return RagQueryResult(
+        answer=answer,
+        context_used=context_used,
+        llm_prompt=user_content,
+    )

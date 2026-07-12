@@ -1,0 +1,96 @@
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>PDF Chat</h1>
+    </div>
+
+    <button
+      type="button"
+      class="upload-btn"
+      (click)="triggerFileUpload()"
+      [disabled]="uploading"
+    >
+      {{ uploading ? 'Uploading…' : 'Upload PDF' }}
+    </button>
+
+    <input
+      #fileInput
+      type="file"
+      accept=".pdf,application/pdf"
+      hidden
+      (change)="onFileSelected($event)"
+    />
+
+    @if (documents.length > 0) {
+      <section class="documents">
+        <h2>Documents</h2>
+        <ul>
+          @for (doc of documents; track doc.filename) {
+            <li>
+              <span class="doc-name">{{ doc.filename }}</span>
+              <span class="doc-meta">{{ doc.chunk_count }} chunks</span>
+            </li>
+          }
+        </ul>
+      </section>
+    }
+  </aside>
+
+  <div class="main-panel">
+    <header class="top-bar">
+      @if (healthMessage) {
+        <span class="health-status" [class]="'health-status--' + healthStatus">
+          {{ healthMessage }}
+        </span>
+      }
+      <button
+        type="button"
+        class="health-btn"
+        (click)="checkBackendHealth()"
+        [disabled]="checkingHealth"
+      >
+        {{ checkingHealth ? 'Checking…' : 'Check backend' }}
+      </button>
+    </header>
+
+    <main class="chat">
+    <div #messagesContainer class="messages">
+      @for (message of messages; track $index) {
+        <article class="message" [class]="'message--' + message.role">
+          <div class="message-label">
+            @switch (message.role) {
+              @case ('user') { You }
+              @case ('assistant') { Assistant }
+              @case ('system') { System }
+            }
+          </div>
+          <div class="message-content">{{ message.content }}</div>
+        </article>
+      }
+
+      @if (asking) {
+        <article class="message message--assistant">
+          <div class="message-label">Assistant</div>
+          <div class="message-content typing">Thinking…</div>
+        </article>
+      }
+    </div>
+
+    @if (errorMessage) {
+      <div class="error-banner">{{ errorMessage }}</div>
+    }
+
+    <form class="composer" (submit)="$event.preventDefault(); sendQuestion()">
+      <textarea
+        [(ngModel)]="question"
+        name="question"
+        rows="1"
+        placeholder="Ask a question about your PDF…"
+        [disabled]="asking"
+        (keydown)="onKeyDown($event)"
+      ></textarea>
+      <button type="submit" [disabled]="asking || !question.trim()">Send</button>
+    </form>
+    </main>
+  </div>
+</div>
