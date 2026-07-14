@@ -18,8 +18,8 @@ from reranker import CrossEncoderReranker
 from vector_store import ChromaVectorStore, SearchHit
 
 # Fixed MVP retrieval / context sizes (not exposed on API)
-RETRIEVE_TOP_K = 8
-CONTEXT_TOP_N = 4
+RETRIEVE_TOP_K = 15
+CONTEXT_TOP_N = 6
 
 
 @dataclass(frozen=True)
@@ -55,32 +55,32 @@ def ingest_pdf(
 
 
 def build_rag_user_prompt(question: str, hits: list[SearchHit]) -> str:
-    # parts: list[str] = [
-    #     "You are a precise assistant. Answer the user question strictly using only the provided context below.",
-    #     "If the context does not contain the answer, reply exactly with: 'I cannot find the answer in the provided documents.' Do not use any outside knowledge.",
-    #     "",
-    #     "--- START CONTEXT ---",
-    # ]
-
     parts: list[str] = [
-        "Answer the user question using the provided context chunks as additional information source."
-        "Informations from context chunks are truthful and they are extracted from documentation. rely on them as much as possible",
-        "If the context does not provide any answer or clue, reply exactly with: 'I cannot find the answer in the provided documents.' Do not use any outside knowledge.",
-        "Provide concise answer that answers on user's question",
-        "--- START CONTEXT ---",
+        "The excerpts below were retrieved from uploaded PDF documents.",
+        "They may be incomplete or cut between chunks.",
+        "",
+        "<documents>",
     ]
-
     for i, h in enumerate(hits, start=1):
-        # Using XML-style tags to cleanly isolate each document chunk
-        parts.append(f"<document id='{i}'>\n{h.text}\n</document>")
-
-    parts.append("--- END CONTEXT ---")
-    parts.append("")
-    parts.append(f"User Question: {question}")
-    parts.append("Format the answer so if you use parts from context chunks they may be sliced between two chunks."
-                 "answer with full and meaningfull sentences")
-    parts.append("Answer:")
-
+        source = h.source or "unknown"
+        parts.append(f'<document id="{i}" source="{source}">')
+        parts.append(h.text)
+        parts.append("</document>")
+        parts.append("")
+    parts.extend([
+        "</documents>",
+        "",
+        f"Question: {question}",
+        "",
+        "Answer the question using only the excerpts above.",
+        "Combine relevant excerpts into one clear, complete answer.",
+        "Ignore excerpts that are not relevant to the question.",
+        "In answer do not mention ids of the documents or chunks.",
+        "If the excerpts do not contain enough information, reply exactly:",
+        "I cannot find the answer in the provided documents.",
+        "",
+        "Answer:",
+    ])
     return "\n".join(parts).strip()
 
 
@@ -97,6 +97,7 @@ class RagContextItem:
 @dataclass(frozen=True)
 class RagQueryResult:
     answer: str
+    retrieved_candidates: list[RagContextItem]
     context_used: list[RagContextItem]
     llm_prompt: str
 
@@ -114,16 +115,36 @@ async def query_rag(
             [
                 {
                     "role": "system",
-                    "content": "You are a helpful assistant. No document has been uploaded yet. Tell the user to upload a PDF first.",
+                    "content": (
+                        "You are a document Q&A assistant. "
+                        "Use only the document excerpts in the user message. "
+                        "Do not use outside knowledge."
+                    ),
                 },
                 {"role": "user", "content": question},
             ],
             model=ollama_model,
         )
-        return RagQueryResult(answer=answer, context_used=[], llm_prompt=question)
+        return RagQueryResult(
+            answer=answer,
+            retrieved_candidates=[],
+            context_used=[],
+            llm_prompt=question,
+        )
 
     q_emb = embedder.encode_one(question)
     hits = store.search(q_emb, top_k=RETRIEVE_TOP_K)
+    retrieved_candidates = [
+        RagContextItem(
+            chunk_id=h.chunk_id,
+            chunk_index=h.chunk_index,
+            retrieval_score=h.score,
+            rerank_score=0.0,
+            text=h.text,
+            source=h.source,
+        )
+        for h in hits
+    ]
     if not hits:
         answer = await chat_completion(
             [
@@ -135,7 +156,12 @@ async def query_rag(
             ],
             model=ollama_model,
         )
-        return RagQueryResult(answer=answer, context_used=[], llm_prompt=question)
+        return RagQueryResult(
+            answer=answer,
+            retrieved_candidates=[],
+            context_used=[],
+            llm_prompt=question,
+        )
 
     passages = [h.text for h in hits]
     ranked = reranker.rerank(question, passages, top_n=CONTEXT_TOP_N)
@@ -166,6 +192,7 @@ async def query_rag(
         )
     return RagQueryResult(
         answer=answer,
+        retrieved_candidates=retrieved_candidates,
         context_used=context_used,
         llm_prompt=user_content,
     )

@@ -159,7 +159,12 @@ async def rag_ask(body: RagAskBody) -> dict[str, Any]:
             detail=f"Could not reach Ollama ({msg})",
         ) from e
 
-    log_rag_query(body.question, result.context_used, llm_prompt=result.llm_prompt)
+    log_rag_query(
+        body.question,
+        result.context_used,
+        retrieved_chunks=result.retrieved_candidates,
+        llm_prompt=result.llm_prompt,
+    )
 
     return {
         "answer": result.answer,
