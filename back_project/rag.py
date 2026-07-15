@@ -1,4 +1,4 @@
-"""Ingest PDF into RAM store; query with bi-encoder retrieval + cross-encoder rerank + Ollama."""
+"""Ingest PDF into RAM store; query with hybrid retrieval + cross-encoder rerank + Ollama."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from embedding_model import EmbeddingModel
+from hybrid_search import reciprocal_rank_fusion
+from keyword_index import KeywordIndex
 from ollama_client import chat_completion
 from pdf_utils import (
     DEFAULT_CHUNK_OVERLAP,
@@ -17,8 +19,9 @@ from pdf_utils import (
 from reranker import CrossEncoderReranker
 from vector_store import ChromaVectorStore, SearchHit
 
-# Fixed MVP retrieval / context sizes (not exposed on API)
-RETRIEVE_TOP_K = 15
+# Per-method retrieval, RRF merge pool, and final LLM context (not exposed on API)
+RETRIEVE_TOP_K = 30
+MERGE_TOP_K = 22
 CONTEXT_TOP_N = 6
 
 
@@ -30,8 +33,42 @@ class IngestResult:
     embedding_dim: int
 
 
+@dataclass(frozen=True)
+class RagContextItem:
+    chunk_id: str
+    chunk_index: int
+    retrieval_score: float
+    rerank_score: float
+    text: str
+    source: str | None = None
+    retrieval_sources: str | None = None
+
+
+@dataclass(frozen=True)
+class RagQueryResult:
+    answer: str
+    vector_candidates: list[RagContextItem]
+    keyword_candidates: list[RagContextItem]
+    merged_candidates: list[RagContextItem]
+    context_used: list[RagContextItem]
+    llm_prompt: str
+
+
+def _context_item(hit: SearchHit, *, rerank_score: float = 0.0) -> RagContextItem:
+    return RagContextItem(
+        chunk_id=hit.chunk_id,
+        chunk_index=hit.chunk_index,
+        retrieval_score=hit.score,
+        rerank_score=rerank_score,
+        text=hit.text,
+        source=hit.source,
+        retrieval_sources=hit.retrieval_sources,
+    )
+
+
 def ingest_pdf(
     store: ChromaVectorStore,
+    keyword_index: KeywordIndex,
     embedder: EmbeddingModel,
     pdf_bytes: bytes,
     *,
@@ -43,9 +80,14 @@ def ingest_pdf(
     chunks = split_into_chunks(text, size=chunk_size, overlap=chunk_overlap)
     if not chunks:
         embeddings = np.zeros((0, embedder.embedding_dim), dtype=np.float32)
+        chunk_ids: list[str] = []
     else:
         embeddings = embedder.encode(chunks)
-    store.add_chunks(chunks, embeddings, source=filename)
+        chunk_ids = store.add_chunks(chunks, embeddings, source=filename)
+
+    if chunk_ids:
+        keyword_index.add_chunks(chunk_ids, chunks, source=filename)
+
     return IngestResult(
         filename=filename,
         chunk_count=len(chunks),
@@ -84,26 +126,20 @@ def build_rag_user_prompt(question: str, hits: list[SearchHit]) -> str:
     return "\n".join(parts).strip()
 
 
-@dataclass(frozen=True)
-class RagContextItem:
-    chunk_id: str
-    chunk_index: int
-    retrieval_score: float
-    rerank_score: float
-    text: str
-    source: str | None = None
-
-
-@dataclass(frozen=True)
-class RagQueryResult:
-    answer: str
-    retrieved_candidates: list[RagContextItem]
-    context_used: list[RagContextItem]
-    llm_prompt: str
+def _empty_query_result(answer: str, *, llm_prompt: str) -> RagQueryResult:
+    return RagQueryResult(
+        answer=answer,
+        vector_candidates=[],
+        keyword_candidates=[],
+        merged_candidates=[],
+        context_used=[],
+        llm_prompt=llm_prompt,
+    )
 
 
 async def query_rag(
     store: ChromaVectorStore,
+    keyword_index: KeywordIndex,
     embedder: EmbeddingModel,
     reranker: CrossEncoderReranker,
     question: str,
@@ -125,27 +161,22 @@ async def query_rag(
             ],
             model=ollama_model,
         )
-        return RagQueryResult(
-            answer=answer,
-            retrieved_candidates=[],
-            context_used=[],
-            llm_prompt=question,
-        )
+        return _empty_query_result(answer, llm_prompt=question)
 
     q_emb = embedder.encode_one(question)
-    hits = store.search(q_emb, top_k=RETRIEVE_TOP_K)
-    retrieved_candidates = [
-        RagContextItem(
-            chunk_id=h.chunk_id,
-            chunk_index=h.chunk_index,
-            retrieval_score=h.score,
-            rerank_score=0.0,
-            text=h.text,
-            source=h.source,
-        )
-        for h in hits
-    ]
-    if not hits:
+    vector_hits = store.search(q_emb, top_k=RETRIEVE_TOP_K)
+    keyword_hits = keyword_index.search(question, top_k=RETRIEVE_TOP_K)
+    merged_hits = reciprocal_rank_fusion(
+        vector_hits,
+        keyword_hits,
+        top_k=MERGE_TOP_K,
+    )
+
+    vector_candidates = [_context_item(h) for h in vector_hits]
+    keyword_candidates = [_context_item(h) for h in keyword_hits]
+    merged_candidates = [_context_item(h) for h in merged_hits]
+
+    if not merged_hits:
         answer = await chat_completion(
             [
                 {
@@ -158,15 +189,17 @@ async def query_rag(
         )
         return RagQueryResult(
             answer=answer,
-            retrieved_candidates=[],
+            vector_candidates=vector_candidates,
+            keyword_candidates=keyword_candidates,
+            merged_candidates=merged_candidates,
             context_used=[],
             llm_prompt=question,
         )
 
-    passages = [h.text for h in hits]
+    passages = [h.text for h in merged_hits]
     ranked = reranker.rerank(question, passages, top_n=CONTEXT_TOP_N)
-    rerank_by_chunk = {hits[r.index].chunk_id: r.score for r in ranked}
-    hits_ordered = [hits[r.index] for r in ranked]
+    rerank_by_chunk = {merged_hits[r.index].chunk_id: r.score for r in ranked}
+    hits_ordered = [merged_hits[r.index] for r in ranked]
 
     user_content = build_rag_user_prompt(question, hits_ordered)
     messages = [
@@ -178,21 +211,18 @@ async def query_rag(
     ]
     answer = await chat_completion(messages, model=ollama_model)
 
-    context_used: list[RagContextItem] = []
-    for h in hits_ordered:
-        context_used.append(
-            RagContextItem(
-                chunk_id=h.chunk_id,
-                chunk_index=h.chunk_index,
-                retrieval_score=h.score,
-                rerank_score=rerank_by_chunk[h.chunk_id],
-                text=h.text,
-                source=h.source,
-            )
+    context_used = [
+        _context_item(
+            h,
+            rerank_score=rerank_by_chunk[h.chunk_id],
         )
+        for h in hits_ordered
+    ]
     return RagQueryResult(
         answer=answer,
-        retrieved_candidates=retrieved_candidates,
+        vector_candidates=vector_candidates,
+        keyword_candidates=keyword_candidates,
+        merged_candidates=merged_candidates,
         context_used=context_used,
         llm_prompt=user_content,
     )

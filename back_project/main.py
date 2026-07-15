@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from embedding_model import EmbeddingModel
+from keyword_index import KeywordIndex
 from logger import log_rag_query, setup_logging
 from pdf_utils import (
     DEFAULT_CHUNK_OVERLAP,
@@ -24,6 +25,7 @@ from vector_store import ChromaVectorStore
 async def lifespan(app: FastAPI):
     setup_logging()
     app.state.store = ChromaVectorStore()
+    app.state.keyword_index = KeywordIndex()
     app.state.embedder = EmbeddingModel()
     app.state.reranker = CrossEncoderReranker()
     yield
@@ -97,10 +99,12 @@ async def rag_ingest(
         raise HTTPException(status_code=400, detail="Empty file")
 
     store: ChromaVectorStore = app.state.store
+    keyword_index: KeywordIndex = app.state.keyword_index
     embedder: EmbeddingModel = app.state.embedder
     try:
         result = ingest_pdf(
             store,
+            keyword_index,
             embedder,
             raw,
             filename=name,
@@ -121,16 +125,18 @@ async def rag_ingest(
 @app.post("/rag/ask")
 async def rag_ask(body: RagAskBody) -> dict[str, Any]:
     """
-    Answer using all ingested chunks: vector retrieve → cross-encoder rerank → Ollama.
+    Answer using all ingested chunks: hybrid retrieve → cross-encoder rerank → Ollama.
     Body: ``question`` only.
     """
     store: ChromaVectorStore = app.state.store
+    keyword_index: KeywordIndex = app.state.keyword_index
     embedder: EmbeddingModel = app.state.embedder
     reranker: CrossEncoderReranker = app.state.reranker
 
     try:
         result = await query_rag(
             store,
+            keyword_index,
             embedder,
             reranker,
             body.question,
@@ -159,12 +165,7 @@ async def rag_ask(body: RagAskBody) -> dict[str, Any]:
             detail=f"Could not reach Ollama ({msg})",
         ) from e
 
-    log_rag_query(
-        body.question,
-        result.context_used,
-        retrieved_chunks=result.retrieved_candidates,
-        llm_prompt=result.llm_prompt,
-    )
+    log_rag_query(body.question, result.context_used)
 
     return {
         "answer": result.answer,
@@ -173,6 +174,7 @@ async def rag_ask(body: RagAskBody) -> dict[str, Any]:
                 "chunk_id": c.chunk_id,
                 "chunk_index": c.chunk_index,
                 "source": c.source,
+                "retrieval_sources": c.retrieval_sources,
                 "retrieval_score": c.retrieval_score,
                 "rerank_score": c.rerank_score,
                 "text": c.text,

@@ -18,6 +18,7 @@ class RagChunkLog(Protocol):
     rerank_score: float
     text: str
     source: str | None
+    retrieval_sources: str | None
 
 
 def setup_logging() -> logging.Logger:
@@ -58,66 +59,27 @@ def get_logger() -> logging.Logger:
     return _logger
 
 
-def _log_chunk_entries(
-    logger: logging.Logger,
-    title: str,
-    chunks: list[RagChunkLog],
-    *,
-    show_rerank: bool,
-) -> None:
-    if not chunks:
-        logger.info("%s: none", title)
-        return
-
-    logger.info("%s (%d):", title, len(chunks))
-    for i, chunk in enumerate(chunks, start=1):
-        if show_rerank:
-            logger.info(
-                "  [%d] chunk_id=%s chunk_index=%s source=%s "
-                "retrieval_score=%.4f rerank_score=%.4f",
-                i,
-                chunk.chunk_id,
-                chunk.chunk_index,
-                chunk.source or "unknown",
-                chunk.retrieval_score,
-                chunk.rerank_score,
-            )
-        else:
-            logger.info(
-                "  [%d] chunk_id=%s chunk_index=%s source=%s retrieval_score=%.4f",
-                i,
-                chunk.chunk_id,
-                chunk.chunk_index,
-                chunk.source or "unknown",
-                chunk.retrieval_score,
-            )
-        logger.info("      text: %s", chunk.text.replace("\n", " "))
-
-
-def log_rag_query(
-    question: str,
-    ranked_chunks: list[RagChunkLog],
-    *,
-    retrieved_chunks: list[RagChunkLog] | None = None,
-    llm_prompt: str | None = None,
-) -> None:
+def log_rag_query(question: str, llm_chunks: list[RagChunkLog]) -> None:
+    """Log the question and only the reranked chunks sent to the LLM."""
     logger = get_logger()
     logger.info("Question: %s", question)
 
-    if retrieved_chunks is not None:
-        _log_chunk_entries(
-            logger,
-            "Vector retrieval candidates",
-            retrieved_chunks,
-            show_rerank=False,
+    if not llm_chunks:
+        logger.info("Top ranked chunks sent to LLM: none")
+        return
+
+    logger.info("Top ranked chunks sent to LLM (%d):", len(llm_chunks))
+    for i, chunk in enumerate(llm_chunks, start=1):
+        sources = chunk.retrieval_sources or "unknown"
+        logger.info(
+            "  [%d] chunk_id=%s chunk_index=%s source=%s sources=%s "
+            "rrf_score=%.4f rerank_score=%.4f",
+            i,
+            chunk.chunk_id,
+            chunk.chunk_index,
+            chunk.source or "unknown",
+            sources,
+            chunk.retrieval_score,
+            chunk.rerank_score,
         )
-
-    _log_chunk_entries(
-        logger,
-        "Top ranked chunks sent to LLM",
-        ranked_chunks,
-        show_rerank=True,
-    )
-
-    if llm_prompt is not None:
-        logger.info("LLM user prompt:\n%s", llm_prompt)
+        logger.info("      text: %s", chunk.text.replace("\n", " "))

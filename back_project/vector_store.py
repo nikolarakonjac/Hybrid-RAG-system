@@ -18,6 +18,7 @@ class SearchHit:
     text: str
     score: float
     source: str | None
+    retrieval_sources: str | None = None
 
 
 class ChromaVectorStore:
@@ -43,13 +44,13 @@ class ChromaVectorStore:
         embeddings: FloatArray,
         *,
         source: str | None = None,
-    ) -> None:
-        """Append chunks and embeddings for one ingest batch."""
+    ) -> list[str]:
+        """Append chunks and embeddings for one ingest batch. Returns chunk IDs."""
         emb = np.asarray(embeddings, dtype=np.float32)
         if len(chunk_texts) == 0:
             if emb.size != 0:
                 raise ValueError("embeddings must be empty when there are no chunks")
-            return
+            return []
         if emb.ndim != 2:
             raise ValueError("embeddings must be 2D (n_chunks, dim)")
         if emb.shape[0] != len(chunk_texts):
@@ -69,6 +70,7 @@ class ChromaVectorStore:
                 documents=chunk_texts[start:end],
                 metadatas=metadatas[start:end],
             )
+        return ids
 
     def search(
         self,
@@ -113,6 +115,7 @@ class ChromaVectorStore:
                     text=text or "",
                     score=score,
                     source=src,
+                    retrieval_sources="vector",
                 )
             )
         return hits
