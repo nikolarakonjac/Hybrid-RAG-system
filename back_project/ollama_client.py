@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_OLLAMA_MODEL = "phi3"
+DEFAULT_OLLAMA_MODEL = "phi4-mini"
 
 
 def _base_url() -> str:
@@ -32,6 +32,7 @@ async def chat_completion(
     messages: list[dict[str, str]],
     *,
     model: str | None = None,
+    temperature: float = 0.0,
 ) -> str:
     """
     Call Ollama ``/api/chat`` (non-streaming). Returns assistant message content.
@@ -41,6 +42,7 @@ async def chat_completion(
         "model": model or _default_model(),
         "messages": messages,
         "stream": False,
+        "options": {"temperature": temperature},
     }
     async with httpx.AsyncClient(timeout=_http_timeout()) as client:
         r = await client.post(url, json=payload)

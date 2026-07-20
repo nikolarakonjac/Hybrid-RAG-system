@@ -59,10 +59,18 @@ def get_logger() -> logging.Logger:
     return _logger
 
 
-def log_rag_query(question: str, llm_chunks: list[RagChunkLog]) -> None:
-    """Log the question and only the reranked chunks sent to the LLM."""
+def log_rag_query(
+    question: str,
+    llm_chunks: list[RagChunkLog],
+    *,
+    answer: str | None = None,
+) -> None:
+    """Log the question, chunks sent to the LLM, and the final answer."""
     logger = get_logger()
     logger.info("Question: %s", question)
+
+    if answer is not None:
+        logger.info("Answer: %s", answer.replace("\n", " "))
 
     if not llm_chunks:
         logger.info("Top ranked chunks sent to LLM: none")

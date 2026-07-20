@@ -8,6 +8,9 @@ from sentence_transformers import SentenceTransformer
 
 FloatArray = NDArray[np.floating]
 
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
+
 
 class EmbeddingModel:
     """
@@ -17,10 +20,11 @@ class EmbeddingModel:
 
     def __init__(
         self,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str = DEFAULT_EMBEDDING_MODEL,
         device: str | None = None,
     ) -> None:
         self.model_name = model_name
+        self._use_bge_query_instruction = model_name.startswith("BAAI/bge-")
         self._model = SentenceTransformer(model_name, device=device)
         dim = self._model.get_sentence_embedding_dimension()
         if dim is None:
@@ -52,15 +56,22 @@ class EmbeddingModel:
         )
         return out.astype(np.float32, copy=False)
 
+    def _prepare_query(self, query: str) -> str:
+        if self._use_bge_query_instruction:
+            return f"{BGE_QUERY_INSTRUCTION}{query}"
+        return query
+
     def encode_one(
         self,
         sentence: str,
         *,
         batch_size: int = 32,
         normalize: bool = True,
+        for_query: bool = True,
     ) -> FloatArray:
         """Single sentence; returns shape (embedding_dim,)."""
-        emb = self.encode([sentence], batch_size=batch_size, normalize=normalize)
+        text = self._prepare_query(sentence) if for_query else sentence
+        emb = self.encode([text], batch_size=batch_size, normalize=normalize)
         return emb[0]
 
     def cosine_similarity(self, a: FloatArray, b: FloatArray) -> float | FloatArray:

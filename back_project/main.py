@@ -165,7 +165,7 @@ async def rag_ask(body: RagAskBody) -> dict[str, Any]:
             detail=f"Could not reach Ollama ({msg})",
         ) from e
 
-    log_rag_query(body.question, result.context_used)
+    log_rag_query(body.question, result.context_used, answer=result.answer)
 
     return {
         "answer": result.answer,

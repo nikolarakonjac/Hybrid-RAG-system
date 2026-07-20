@@ -6,8 +6,8 @@ import re
 
 import fitz
 
-DEFAULT_CHUNK_SIZE = 1600
-DEFAULT_CHUNK_OVERLAP = 200
+DEFAULT_CHUNK_SIZE = 1400
+DEFAULT_CHUNK_OVERLAP = 140
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
